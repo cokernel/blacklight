@@ -1,5 +1,5 @@
 class CatalogController < ApplicationController
-  
+
   include Blacklight::SolrHelper
   
   before_filter :search_session, :history_session
@@ -11,20 +11,13 @@ before_filter :adjust_for_folder_view
   # Whenever an action raises SolrHelper::InvalidSolrID, this block gets executed.
   # Hint: the SolrHelper #get_solr_response_for_doc_id method raises this error,
   # which is used in the #show action here.
-  rescue_from InvalidSolrID, :with => lambda {
-    # when a request for /catalog/BAD_SOLR_ID is made, this method is executed...
-    flash[:notice] = "Sorry, you seem to have encountered an error."
-    redirect_to catalog_index_path
-  }
+  rescue_from InvalidSolrID, :with => :invalid_solr_id_error
+
   
-  # When RSolr::RequestError is raised, this block is executed.
+  # When RSolr::RequestError is raised, the rsolr_request_error method is executed.
   # The index action will more than likely throw this one.
   # Example, when the standard query parser is used, and a user submits a "bad" query.
-  rescue_from RSolr::RequestError, :with => lambda {
-    # when solr (RSolr) throws an error (RSolr::RequestError), this method is executed.
-    flash[:notice] = "Sorry, I don't understand your search."
-    redirect_to catalog_index_path
-  }
+  rescue_from RSolr::RequestError, :with => :rsolr_request_error
   
   # get search results from the solr index
   def index
@@ -44,6 +37,15 @@ before_filter :adjust_for_folder_view
       format.xml  {render :xml => @document.marc.to_xml}
       format.refworks
       format.endnote
+
+      # Add any dynamically added (such as by document extensions)
+      # export formats.
+      @document.export_formats.each_key do | format_name |
+        # It's important that the argument to send be a symbol;
+        # if it's a string, it makes Rails unhappy for unclear reasons. 
+        format.send(format_name.to_sym) { render :text => @document.export_as(format_name) }
+      end
+      
     end
   end
     # we need to know if we are viewing the bookmarks page so we can
@@ -256,7 +258,36 @@ before_filter :adjust_for_folder_view
       search_session[:total] = @response.total
     end
   end
-
+  
 
   
+  # when solr (RSolr) throws an error (RSolr::RequestError), this method is executed.
+  def rsolr_request_error
+    if RAILS_ENV == "development"
+      render # will give us the stack trace
+    else
+      flash_notice = "Sorry, I don't understand your search."
+      # Set the notice flag if the flash[:notice] is already set to the error that we are setting.
+      # This is intended to stop the redirect loop error
+      notice = flash[:notice] if flash[:notice] == flash_notice
+      unless notice
+        flash[:notice] = flash_notice
+        redirect_to root_path, :status => 500
+      else
+        render :template => "public/500.html", :layout => false, :status => 500
+      end
+    end
+  end
+  
+  # when a request for /catalog/BAD_SOLR_ID is made, this method is executed...
+  def invalid_solr_id_error
+    if RAILS_ENV == "development"
+      render # will give us the stack trace
+    else
+      flash[:notice] = "Sorry, you have requested a record that doesn't exist."
+      redirect_to root_path, :status => 404
+    end
+    
+  end
 end
+
